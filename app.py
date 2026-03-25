@@ -172,8 +172,10 @@ if uploaded:
         if selected_group != '전체':
             result = result[result['그룹']   == selected_group]
 
-        # 숫자 상태에서 정렬
-        result = result.sort_values('누적매출액', ascending=False)
+        # 숫자 컬럼 따로 저장 후 정렬
+        result['_매출정렬'] = pd.to_numeric(result['누적매출액'], errors='coerce')
+        result = result.sort_values('_매출정렬', ascending=False)
+        result = result.drop(columns=['_매출정렬'])
 
         # 정렬 후 표시용으로 변환
         result['성장률'] = result['성장률'].apply(
