@@ -149,4 +149,45 @@ if uploaded:
         '😐 보통':    '#95a5a6',
         '💀 정리대상':'#e74c3c',
     }
-    pie = pd.DataFrame({'그룹': list(counts.
+    pie = pd.DataFrame({'그룹': list(counts.keys()), '수': list(counts.values())})
+    fig = px.pie(pie, values='수', names='그룹',
+                 color='그룹', color_discrete_map=color_map)
+    fig.update_layout(height=300, margin=dict(t=0, b=0))
+    st.plotly_chart(fig, use_container_width=True)
+
+    st.divider()
+
+    # ── 필터 + 테이블 ──────────────────────────────────
+    col_f1, col_f2 = st.columns(2)
+    mgr_list   = ['전체'] + sorted(features['담당자'].dropna().unique().tolist())
+    group_list = ['전체'] + groups
+    selected_mgr   = col_f1.selectbox("담당자", mgr_list)
+    selected_group = col_f2.selectbox("그룹",   group_list)
+
+    result = features.copy()
+    if selected_mgr   != '전체':
+        result = result[result['담당자'] == selected_mgr]
+    if selected_group != '전체':
+        result = result[result['그룹']   == selected_group]
+
+    result = result.sort_values('누적매출액', ascending=False)
+
+    display = pd.DataFrame()
+    display['거래처명']    = result['거래처명'].values
+    display['담당자']      = result['담당자'].values
+    display['지역']        = result['지역'].values
+    display['그룹']        = result['그룹'].values
+    display['총구매횟수']  = result['총구매횟수'].values
+    display['구매제품수']  = result['구매제품수'].values
+    display['누적매출액']  = result['누적매출액'].apply(lambda x: f"{x:,.0f}원").values
+    display['회당매출']    = result['회당매출'].apply(lambda x: f"{x:,.0f}원").values
+    display['반기추세']    = result['반기추세'].apply(
+        lambda x: f"+{x:.0%}" if x is not None and x > 0
+        else (f"{x:.0%}" if x is not None else "-")).values
+    display['미구매일수']  = result['미구매일수'].values
+    display['평균구매주기']= result['평균구매주기'].apply(lambda x: f"{x:.0f}일").values
+    display['주기배율']    = result['주기배율'].apply(lambda x: f"{x:.1f}배").values
+    display['주요제품']    = result['주요제품'].values
+
+    st.subheader(f"📋 거래처 목록 ({len(result)}개)")
+    st.dataframe(display, use_container_width=True, hide_index=True)
