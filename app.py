@@ -13,9 +13,8 @@ uploaded = st.file_uploader("Raw 엑셀 파일 업로드", type=["xlsx"])
 if uploaded:
     df = pd.read_excel(uploaded, sheet_name="Raw")
 
-    # 직거래만 확실하게 필터
     df_d = df[
-        (df['유통'] == '직거래') &
+        (df['유통'] == '신규처') &
         (df['거래처명'].notna())
     ].copy()
     df_d['매출일(배송완료일)'] = pd.to_datetime(df_d['매출일(배송완료일)'])
