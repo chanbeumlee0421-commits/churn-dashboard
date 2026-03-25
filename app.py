@@ -5,7 +5,7 @@ import plotly.express as px
 
 st.set_page_config(page_title="거래처 성장 대시보드", layout="wide")
 st.title("🐾 거래처 성장 대시보드")
-st.caption("경보제약 동물의약품 | 기준일: 2026-03-24")
+st.caption("경보제약 동물의약품")
 
 st.sidebar.markdown("""
 ### 그룹 분류 기준
@@ -16,13 +16,15 @@ st.sidebar.markdown("""
 | 🟢 안심 | 누적 1000만↑+10회↑+주기배율 2.0↓ / 누적 3000만↑+3회↑+주기배율 2.0↓ |
 | ⚠️ 주의 | 누적 500만↑+5회↑+주기배율 1.5↑+(반기추세 -30%↓ OR 최근반기 0) |
 | 😐 보통 | 위 조건 해당 없음 |
-| 💀 정리 | 365일↑미구매+최근반기0+누적1000만↓ / 365일↑+누적300만↓+3회↓ |
+| 💤 비활성화 | 365일↑미구매+누적1000만↓ / 365일↑+3회↓ |
 
 ---
 ### 지표 설명
 **주기배율** = 미구매일수 ÷ 평균구매주기
 **반기추세** = 최근6개월 vs 이전6개월 매출 변화율
 (이전반기 50만원 미만이면 -)
+
+**기준일** = 오늘 날짜 자동 적용
 """)
 
 uploaded = st.file_uploader("Raw 엑셀 파일 업로드", type=["xlsx"])
@@ -36,6 +38,7 @@ if uploaded:
     df_d['매출일(배송완료일)'] = pd.to_datetime(df_d['매출일(배송완료일)'], errors='coerce')
     df_d = df_d[df_d['매출일(배송완료일)'].notna()]
     df_d = df_d.sort_values(['거래처명', '매출일(배송완료일)'])
+
     ref_date = pd.Timestamp.today().normalize()
     cut6  = ref_date - pd.DateOffset(months=6)
     cut12 = ref_date - pd.DateOffset(months=12)
@@ -77,7 +80,6 @@ if uploaded:
             lambda x: pd.Series(get_half(x), index=['최근반기', '이전반기']))
         features['최근반기'] = half['최근반기'].values
         features['이전반기'] = half['이전반기'].values
-        # 이전반기 50만 미만이면 None (왜곡 방지)
         features['반기추세'] = features.apply(
             lambda r: (r['최근반기'] - r['이전반기']) / r['이전반기']
             if r['이전반기'] >= 500_000 else None, axis=1)
@@ -97,24 +99,24 @@ if uploaded:
 
         # 1순위: 💤 비활성화
         if inactive >= 365 and revenue < 10_000_000:
-                    return '💤 비활성화'
-                if inactive >= 365 and cnt <= 3:
-                    return '💤 비활성화'
+            return '💤 비활성화'
+        if inactive >= 365 and cnt <= 3:
+            return '💤 비활성화'
 
-        # 2순위: ⚠️ 주의 (성장보다 먼저 — 과거 좋았지만 최근 나빠진 곳)
+        # 2순위: ⚠️ 주의
         if revenue >= 5_000_000 and cnt >= 5 and ratio >= 1.5:
             if (pd.notna(trend) and trend <= -0.3) or recent6 == 0:
                 return '⚠️ 주의'
 
         # 3순위: 🚀 성장
-        # ① 반기추세 +20%↑ (이전반기 50만↑ 보장됨)
+        # ① 반기추세 +20%↑
         if on_track and pd.notna(trend) and trend >= 0.2:
             return '🚀 성장'
-        # ② 급성장 (이전반기 있고 최근반기 3배↑)
+        # ② 급성장
         if (on_track and prev6 >= 500_000 and
                 recent6 >= prev6 * 3 and duration >= 180):
             return '🚀 성장'
-        # ③ 장기재활성화 (활동 365일↑ + 이전반기 0 + 최근반기 500만↑)
+        # ③ 장기재활성화
         if (on_track and duration >= 365 and
                 prev6 == 0 and recent6 >= 5_000_000):
             return '🚀 성장'
@@ -132,8 +134,10 @@ if uploaded:
 
     # ── 전체 현황 ──────────────────────────────────────
     st.subheader("📊 전체 현황")
+    st.caption(f"기준일: {ref_date.strftime('%Y-%m-%d')}")
+
     total  = len(features)
-    groups = ['🚀 성장', '🟢 안심', '⚠️ 주의', '😐 보통', '💀 정리대상']
+    groups = ['🚀 성장', '🟢 안심', '⚠️ 주의', '😐 보통', '💤 비활성화']
     counts = {g: (features['그룹'] == g).sum() for g in groups}
 
     cols = st.columns(5)
@@ -145,7 +149,7 @@ if uploaded:
         '🟢 안심':    '#2ecc71',
         '⚠️ 주의':   '#e67e22',
         '😐 보통':    '#95a5a6',
-        '💀 정리대상':'#e74c3c',
+        '💤 비활성화':'#bdc3c7',
     }
     pie = pd.DataFrame({
         '그룹': list(counts.keys()),
