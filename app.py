@@ -70,17 +70,15 @@ if uploaded:
 
     # ── 매출 추세 ──────────────────────────────────────
     def get_sales_trend(hosp, cnt):
-        if cnt < 3:
+        if cnt < 2:
             return 0
-        d = df_d[df_d['거래처명'] == hosp].sort_values('매출일(배송완료일)')
-        orders = d.groupby('매출일(배송완료일)')['매출액(vat 제외)'].sum().reset_index()
-        if len(orders) < 3:
-            return 0
-        early  = orders.iloc[:2]['매출액(vat 제외)'].mean()
-        recent = orders.iloc[-2:]['매출액(vat 제외)'].mean()
-        if early == 0:
-            return 0
-        return (recent - early) / early
+        d = df_d[df_d['거래처명'] == hosp]
+        cut = ref_date - pd.DateOffset(months=6)
+        recent = d[d['매출일(배송완료일)'] >  cut]['매출액(vat 제외)'].sum()
+        prev   = d[d['매출일(배송완료일)'] <= cut]['매출액(vat 제외)'].sum()
+        if prev == 0:
+            return 0  # 이전 반기 없으면 신규로 보고 0
+        return (recent - prev) / prev
 
     # ── 주요제품 ──────────────────────────────────────
     def top3_products(hosp):
