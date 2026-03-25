@@ -11,9 +11,9 @@ st.sidebar.markdown("""
 
 | 그룹 | 기준 |
 |---|---|
-| 🚀 성장형 | 분기 4개↑ + 최근 2분기가 직전 2분기 대비 10%↑ + 180일 내 구매 |
-| ✅ 안정형 | 구매 6회↑ + 누적매출 210만원↑ + 180일 내 구매 |
-| ⚠️ 위험형 | 구매 3회↑ + 180~365일 미구매 |
+| 🚀 성장형 | 분기 4개↑ + 최근 2분기 > 직전 2분기 10%↑ + 미구매일수 < 평균주기×1.5 |
+| ✅ 안정형 | 거래 1년↑ + 구매 6회↑ + 누적매출 210만원↑ + 미구매일수 < 평균주기×1.5 |
+| ⚠️ 위험형 | 구매 3회↑ + 미구매일수 > 평균주기×1.5 |
 | 📉 저효율형 | 구매 2회 이하 OR 365일↑ 미구매 |
 | 🆕 신규 | 첫거래 6개월 미만 + 구매 4회 이하 |
 
@@ -51,30 +51,25 @@ if uploaded:
     df_d['분기'] = df_d['매출일(배송완료일)'].dt.to_period('Q')
     ref_date = pd.Timestamp('2026-03-24')
 
-    # ── 분기별 성장률 (직전 2분기 vs 최근 2분기) ────────
-    qtr_sales = df_d.groupby(
-        ['거래처명', '분기'])['매출액(vat 제외)'].sum().reset_index()
+    qtr_sales = df_d.groupby(['거래처명','분기'])['매출액(vat 제외)'].sum().reset_index()
 
     def get_growth(hosp_name):
-        q = qtr_sales[qtr_sales['거래처명'] == hosp_name].sort_values('분기')
+        q = qtr_sales[qtr_sales['거래처명']==hosp_name].sort_values('분기')
         if len(q) < 4:
             return None
         sales  = q['매출액(vat 제외)'].values
-        prev   = sales[-4:-2].mean()  # 직전 2분기
-        recent = sales[-2:].mean()    # 최근 2분기
+        prev   = sales[-4:-2].mean()
+        recent = sales[-2:].mean()
         if prev == 0:
             return None
         return (recent - prev) / prev
 
-    # ── 주요제품 상위 3개 + 수량 ───────────────────────
     def top3_products(hosp_name):
-        d   = df_d[df_d['거래처명'] == hosp_name]
+        d   = df_d[df_d['거래처명']==hosp_name]
         top = d.groupby('품명요약2')['매출수량'].sum().sort_values(ascending=False).head(3)
         return ' / '.join([f"{prod} {int(qty)}개" for prod, qty in top.items()])
 
-    # ── 피처 생성 ──────────────────────────────────────
     g = df_d.groupby('거래처명')
-
     features = pd.DataFrame({
         '첫구매일'   : g['매출일(배송완료일)'].min(),
         '마지막구매일': g['매출일(배송완료일)'].max(),
@@ -87,7 +82,8 @@ if uploaded:
 
     features['활동기간_일']  = (features['마지막구매일'] - features['첫구매일']).dt.days.fillna(0)
     features['미구매일수']   = (ref_date - features['마지막구매일']).dt.days.fillna(999)
-    features['평균구매주기'] = features['활동기간_일'] / features['총구매횟수'].replace(0, 1)
+    features['평균구매주기'] = features['활동기간_일'] / features['총구매횟수'].replace(0,1)
+    features['거래기간_년']  = features['활동기간_일'] / 365
     features['신규여부']     = (
         (features['첫구매일'] >= ref_date - pd.DateOffset(months=6)) &
         (features['총구매횟수'] <= 4)
@@ -97,13 +93,16 @@ if uploaded:
         features['성장률']   = features['거래처명'].apply(get_growth)
         features['주요제품'] = features['거래처명'].apply(top3_products)
 
-    # ── 그룹 분류 ──────────────────────────────────────
     def assign_group(row):
-        inactive = row['미구매일수']
-        cnt      = row['총구매횟수']
-        growth   = row['성장률']
-        revenue  = row['누적매출액']
-        is_new   = row['신규여부']
+        inactive   = row['미구매일수']
+        cnt        = row['총구매횟수']
+        growth     = row['성장률']
+        revenue    = row['누적매출액']
+        is_new     = row['신규여부']
+        avg_cycle  = max(row['평균구매주기'], 1)
+        threshold  = avg_cycle * 1.5
+        years      = row['거래기간_년']
+        on_track   = inactive < threshold
 
         # 신규
         if is_new:
@@ -112,23 +111,22 @@ if uploaded:
         if cnt <= 2 or inactive > 365:
             return '📉 저효율형'
         # 성장형
-        if growth is not None and growth >= 0.1 and inactive <= 180:
+        if growth is not None and growth >= 0.1 and on_track:
             return '🚀 성장형'
         # 안정형
-        if cnt >= 6 and revenue >= 2_100_000 and inactive <= 180:
+        if years >= 1 and cnt >= 6 and revenue >= 2_100_000 and on_track:
             return '✅ 안정형'
         # 위험형
-        if cnt >= 3 and 180 < inactive <= 365:
+        if cnt >= 3 and not on_track:
             return '⚠️ 위험형'
         return '⚠️ 위험형'
 
     features['그룹'] = features.apply(assign_group, axis=1)
 
-    # ── 종합점수 ───────────────────────────────────────
     def normalize(series):
         mn, mx = series.min(), series.max()
         if mx == mn:
-            return pd.Series([50.0] * len(series), index=series.index)
+            return pd.Series([50.0]*len(series), index=series.index)
         return (series - mn) / (mx - mn) * 100
 
     growth_filled = features['성장률'].fillna(0)
@@ -142,56 +140,55 @@ if uploaded:
 
     # ── 요약 지표 ──────────────────────────────────────
     cols = st.columns(5)
-    for col, label in zip(
-        cols,
-        ['🚀 성장형', '✅ 안정형', '⚠️ 위험형', '📉 저효율형', '🆕 신규']
-    ):
-        col.metric(label, f"{(features['그룹'] == label).sum()}개")
+    for col, label in zip(cols,
+        ['🚀 성장형','✅ 안정형','⚠️ 위험형','📉 저효율형','🆕 신규']):
+        col.metric(label, f"{(features['그룹']==label).sum()}개")
 
     st.divider()
 
-    # ── 탭 구성 ────────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs(["📋 거래처 목록", "🔍 그룹별 패턴", "📊 담당자 현황"])
+    tab1, tab2, tab3 = st.tabs(["📋 거래처 목록","🔍 그룹별 패턴","📊 담당자 현황"])
 
     with tab1:
         col_f1, col_f2 = st.columns(2)
         mgr_list   = ['전체'] + sorted(features['담당자'].dropna().unique().tolist())
-        group_list = ['전체', '🚀 성장형', '✅ 안정형', '⚠️ 위험형', '📉 저효율형', '🆕 신규']
+        group_list = ['전체','🚀 성장형','✅ 안정형','⚠️ 위험형','📉 저효율형','🆕 신규']
         selected_mgr   = col_f1.selectbox("담당자", mgr_list)
         selected_group = col_f2.selectbox("그룹",   group_list)
 
-        # 정렬용 숫자 컬럼 따로 유지
-        result = features[[
-            '거래처명', '담당자', '지역', '그룹', '종합점수',
-            '총구매횟수', '구매제품수', '누적매출액',
-            '성장률', '미구매일수', '평균구매주기', '주요제품'
-        ]].copy()
-
+        # features는 항상 숫자 상태 유지
+        # 필터 + 정렬을 숫자 상태에서 처리
+        filt = features.copy()
         if selected_mgr   != '전체':
-            result = result[result['담당자'] == selected_mgr]
+            filt = filt[filt['담당자'] == selected_mgr]
         if selected_group != '전체':
-            result = result[result['그룹']   == selected_group]
+            filt = filt[filt['그룹']   == selected_group]
 
-        # 숫자 컬럼 따로 저장 후 정렬
-        result['_매출정렬'] = pd.to_numeric(result['누적매출액'], errors='coerce')
-        result = result.sort_values('_매출정렬', ascending=False)
-        result = result.drop(columns=['_매출정렬'])
+        filt = filt.sort_values('누적매출액', ascending=False)
 
-        # 정렬 후 표시용으로 변환
-        result['성장률'] = result['성장률'].apply(
+        # 표시용 컬럼만 따로 만들기
+        display = pd.DataFrame()
+        display['거래처명']    = filt['거래처명'].values
+        display['담당자']      = filt['담당자'].values
+        display['지역']        = filt['지역'].values
+        display['그룹']        = filt['그룹'].values
+        display['종합점수']    = filt['종합점수'].values
+        display['총구매횟수']  = filt['총구매횟수'].values
+        display['구매제품수']  = filt['구매제품수'].values
+        display['누적매출액']  = filt['누적매출액'].apply(lambda x: f"{x:,.0f}원").values
+        display['성장률']      = filt['성장률'].apply(
             lambda x: f"+{x:.0%}" if x is not None and x > 0
             else (f"{x:.0%}" if x is not None else "N/A")
-        )
-        result['누적매출액']   = result['누적매출액'].apply(lambda x: f"{x:,.0f}원")
-        result['평균구매주기'] = result['평균구매주기'].apply(lambda x: f"{x:.0f}일")
-        result['종합점수']     = result['종합점수'].round(1)
+        ).values
+        display['미구매일수']   = filt['미구매일수'].values
+        display['평균구매주기'] = filt['평균구매주기'].apply(lambda x: f"{x:.0f}일").values
+        display['주요제품']     = filt['주요제품'].values
 
-        st.dataframe(result, use_container_width=True, hide_index=True)
+        st.dataframe(display, use_container_width=True, hide_index=True)
 
     with tab2:
         selected_g = st.selectbox(
             "분석할 그룹 선택",
-            ['🚀 성장형', '✅ 안정형', '⚠️ 위험형', '📉 저효율형', '🆕 신규']
+            ['🚀 성장형','✅ 안정형','⚠️ 위험형','📉 저효율형','🆕 신규']
         )
         grp = features[features['그룹'] == selected_g]
 
@@ -219,8 +216,8 @@ if uploaded:
 
         st.markdown("**📈 그룹 특징 요약**")
         st.dataframe(
-            grp[['종합점수', '총구매횟수', '구매제품수',
-                 '누적매출액', '미구매일수', '평균구매주기']]
+            grp[['종합점수','총구매횟수','구매제품수',
+                 '누적매출액','미구매일수','평균구매주기']]
             .describe().round(1),
             use_container_width=True
         )
@@ -228,11 +225,11 @@ if uploaded:
     with tab3:
         mgr_summary = features.groupby('담당자').agg(
             담당거래처=('거래처명',  'count'),
-            성장형=('그룹',   lambda x: (x == '🚀 성장형').sum()),
-            안정형=('그룹',   lambda x: (x == '✅ 안정형').sum()),
-            위험형=('그룹',   lambda x: (x == '⚠️ 위험형').sum()),
-            저효율형=('그룹', lambda x: (x == '📉 저효율형').sum()),
-            신규=('그룹',     lambda x: (x == '🆕 신규').sum()),
+            성장형=('그룹',   lambda x: (x=='🚀 성장형').sum()),
+            안정형=('그룹',   lambda x: (x=='✅ 안정형').sum()),
+            위험형=('그룹',   lambda x: (x=='⚠️ 위험형').sum()),
+            저효율형=('그룹', lambda x: (x=='📉 저효율형').sum()),
+            신규=('그룹',     lambda x: (x=='🆕 신규').sum()),
             평균종합점수=('종합점수', 'mean'),
             평균매출=('누적매출액',  'mean'),
         ).reset_index()
