@@ -5,7 +5,7 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 
 st.set_page_config(page_title="이탈 예측 대시보드", layout="wide")
-st.title("🐾 동물병원 이탈 예측 대시보드")
+st.title("동물병원 이탈 예측 대시보드")
 st.caption("경보제약 동물의약품 | 기준일: 2026-03-24")
 
 uploaded = st.file_uploader("Raw 엑셀 파일 업로드", type=["xlsx"])
