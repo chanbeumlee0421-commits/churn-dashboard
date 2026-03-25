@@ -5,101 +5,113 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import LabelEncoder
 
 st.set_page_config(page_title="이탈 예측 대시보드", layout="wide")
-st.title("동물병원 이탈 예측 대시보드")
+st.title("🐾 동물병원 이탈 예측 대시보드")
 st.caption("경보제약 동물의약품 | 기준일: 2026-03-24")
 
-uploaded = st.file_uploader("Raw 엑셀 파일 업로드", type=["xlsx"])
+# 구글 시트에서 자동으로 읽기
+SHEET_ID = "1256Y_vrbs7KJJm4RWVLfdDK6-5d9gRFy"
+url = f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=xlsx"
 
-if uploaded:
-    df = pd.read_excel(uploaded, sheet_name="Raw")
+@st.cache_data(ttl=300)  # 5분마다 자동 갱신
+def load_data():
+    df = pd.read_excel(url, sheet_name="Raw")
+    return df
 
-    # 신규처만 필터
-    df_d = df[
-        (df['거래구분'] == '신규처') &
-        (df['거래처명'].notna())
-    ].copy()
-    df_d['매출일(배송완료일)'] = pd.to_datetime(df_d['매출일(배송완료일)'], errors='coerce')
-    df_d = df_d[df_d['매출일(배송완료일)'].notna()]
+with st.spinner("데이터 불러오는 중..."):
+    try:
+        df = load_data()
+        st.success(f"✅ 데이터 로드 완료 ({len(df)}행)")
+    except Exception as e:
+        st.error("데이터 로드 실패. 구글 시트 공유 설정을 확인해주세요.")
+        st.stop()
 
-    st.info(f"신규처 거래 건수: {len(df_d)}건 / 거래처 수: {df_d['거래처명'].nunique()}개")
+# 신규처만 필터
+df_d = df[
+    (df['거래구분'] == '신규처') &
+    (df['거래처명'].notna())
+].copy()
+df_d['매출일(배송완료일)'] = pd.to_datetime(df_d['매출일(배송완료일)'], errors='coerce')
+df_d = df_d[df_d['매출일(배송완료일)'].notna()]
 
-    ref_date = pd.Timestamp('2026-03-24')
-    g = df_d.groupby('거래처명')
+ref_date = pd.Timestamp('2026-03-24')
+g = df_d.groupby('거래처명')
 
-    features = pd.DataFrame({
-        '첫구매일'   : g['매출일(배송완료일)'].min(),
-        '마지막구매일': g['매출일(배송완료일)'].max(),
-        '총구매횟수'  : g['매출일(배송완료일)'].count(),
-        '구매제품수'  : g['품명요약2'].nunique(),
-        '누적매출액'  : g['매출액(vat 제외)'].sum(),
-        '담당자'     : g['담당자'].last(),
-        '지역'       : g['지역1'].last(),
-    }).reset_index()
+features = pd.DataFrame({
+    '첫구매일'   : g['매출일(배송완료일)'].min(),
+    '마지막구매일': g['매출일(배송완료일)'].max(),
+    '총구매횟수'  : g['매출일(배송완료일)'].count(),
+    '구매제품수'  : g['품명요약2'].nunique(),
+    '누적매출액'  : g['매출액(vat 제외)'].sum(),
+    '담당자'     : g['담당자'].last(),
+    '지역'       : g['지역1'].last(),
+}).reset_index()
 
-    features['활동기간_일']  = (features['마지막구매일'] - features['첫구매일']).dt.days.fillna(0)
-    features['미구매일수']   = (ref_date - features['마지막구매일']).dt.days.fillna(999)
-    features['평균구매주기'] = features['활동기간_일'] / features['총구매횟수'].replace(0, 1)
-    features['거래처당매출'] = features['누적매출액'] / features['총구매횟수'].replace(0, 1)
-    features['이탈']        = (features['미구매일수'] >= 180).astype(int)
+features['활동기간_일']  = (features['마지막구매일'] - features['첫구매일']).dt.days.fillna(0)
+features['미구매일수']   = (ref_date - features['마지막구매일']).dt.days.fillna(999)
+features['평균구매주기'] = features['활동기간_일'] / features['총구매횟수'].replace(0, 1)
+features['거래처당매출'] = features['누적매출액'] / features['총구매횟수'].replace(0, 1)
+features['이탈']        = (features['미구매일수'] >= 180).astype(int)
 
-    le_mgr = LabelEncoder()
-    le_reg = LabelEncoder()
-    features['담당자_enc'] = le_mgr.fit_transform(features['담당자'].fillna('없음'))
-    features['지역_enc']   = le_reg.fit_transform(features['지역'].fillna('없음'))
+le_mgr = LabelEncoder()
+le_reg = LabelEncoder()
+features['담당자_enc'] = le_mgr.fit_transform(features['담당자'].fillna('없음'))
+features['지역_enc']   = le_reg.fit_transform(features['지역'].fillna('없음'))
 
-    feature_cols = ['총구매횟수', '구매제품수', '누적매출액', '활동기간_일',
-                    '평균구매주기', '거래처당매출', '담당자_enc', '지역_enc']
+feature_cols = ['총구매횟수', '구매제품수', '누적매출액', '활동기간_일',
+                '평균구매주기', '거래처당매출', '담당자_enc', '지역_enc']
 
-    X = features[feature_cols].fillna(0)
-    y = features['이탈']
+X = features[feature_cols].fillna(0)
+y = features['이탈']
 
-    # 학습 가능한 데이터만
-    mask = y.notna() & (X.notna().all(axis=1))
-    X = X[mask].astype(float)
-    y = y[mask].astype(int)
+mask = y.notna() & (X.notna().all(axis=1))
+X = X[mask].astype(float)
+y = y[mask].astype(int)
 
-    if len(y.unique()) < 2:
-        st.warning("이탈/활성 데이터가 충분하지 않아요. 기간을 늘려주세요.")
-    else:
-        model = RandomForestClassifier(n_estimators=200, max_depth=6,
-                                        random_state=42, class_weight='balanced')
-        model.fit(X, y)
+if len(y.unique()) < 2:
+    st.warning("이탈/활성 데이터가 충분하지 않아요.")
+    st.stop()
 
-        features.loc[mask, '이탈확률'] = model.predict_proba(X)[:, 1]
-        features['이탈확률'] = features['이탈확률'].fillna(0.5)
-        features['위험등급'] = pd.cut(features['이탈확률'],
-            bins=[0, 0.3, 0.5, 0.7, 1.0],
-            labels=['🟢 안전', '🟡 주의', '🟠 위험', '🔴 긴급'])
+model = RandomForestClassifier(n_estimators=200, max_depth=6,
+                                random_state=42, class_weight='balanced')
+model.fit(X, y)
 
-        # 요약 지표
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("전체 거래처", f"{len(features)}개")
-        col2.metric("🔴 긴급", f"{(features['위험등급']=='🔴 긴급').sum()}개")
-        col3.metric("🟠 위험", f"{(features['위험등급']=='🟠 위험').sum()}개")
-        col4.metric("🟢 안전", f"{(features['위험등급']=='🟢 안전').sum()}개")
+features.loc[mask, '이탈확률'] = model.predict_proba(X)[:, 1]
+features['이탈확률'] = features['이탈확률'].fillna(0.5)
+features['위험등급'] = pd.cut(features['이탈확률'],
+    bins=[0, 0.3, 0.5, 0.7, 1.0],
+    labels=['🟢 안전', '🟡 주의', '🟠 위험', '🔴 긴급'])
 
-        st.divider()
+# 요약 지표
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("전체 거래처", f"{len(features)}개")
+col2.metric("🔴 긴급", f"{(features['위험등급']=='🔴 긴급').sum()}개")
+col3.metric("🟠 위험", f"{(features['위험등급']=='🟠 위험').sum()}개")
+col4.metric("🟢 안전", f"{(features['위험등급']=='🟢 안전').sum()}개")
 
-        # 필터
-        col_f1, col_f2 = st.columns(2)
-        mgr_list   = ['전체'] + sorted(features['담당자'].dropna().unique().tolist())
-        grade_list = ['전체', '🔴 긴급', '🟠 위험', '🟡 주의', '🟢 안전']
+st.divider()
 
-        selected_mgr   = col_f1.selectbox("담당자 선택", mgr_list)
-        selected_grade = col_f2.selectbox("위험등급 선택", grade_list)
+# 필터
+col_f1, col_f2 = st.columns(2)
+mgr_list   = ['전체'] + sorted(features['담당자'].dropna().unique().tolist())
+grade_list = ['전체', '🔴 긴급', '🟠 위험', '🟡 주의', '🟢 안전']
 
-        result = features[['거래처명', '담당자', '지역', '미구매일수',
-                            '총구매횟수', '구매제품수', '누적매출액',
-                            '이탈확률', '위험등급']].copy()
+selected_mgr   = col_f1.selectbox("담당자 선택", mgr_list)
+selected_grade = col_f2.selectbox("위험등급 선택", grade_list)
 
-        if selected_mgr != '전체':
-            result = result[result['담당자'] == selected_mgr]
-        if selected_grade != '전체':
-            result = result[result['위험등급'] == selected_grade]
+result = features[['거래처명', '담당자', '지역', '미구매일수',
+                    '총구매횟수', '구매제품수', '누적매출액',
+                    '이탈확률', '위험등급']].copy()
 
-        result = result.sort_values('이탈확률', ascending=False)
-        result['이탈확률']  = (result['이탈확률'] * 100).round(1).astype(str) + '%'
-        result['누적매출액'] = result['누적매출액'].apply(lambda x: f"{x:,.0f}원")
+if selected_mgr != '전체':
+    result = result[result['담당자'] == selected_mgr]
+if selected_grade != '전체':
+    result = result[result['위험등급'] == selected_grade]
 
-        st.subheader(f"거래처 목록 ({len(result)}개)")
-        st.dataframe(result, use_container_width=True, hide_index=True)
+result = result.sort_values('이탈확률', ascending=False)
+result['이탈확률']  = (result['이탈확률'] * 100).round(1).astype(str) + '%'
+result['누적매출액'] = result['누적매출액'].apply(lambda x: f"{x:,.0f}원")
+
+st.subheader(f"거래처 목록 ({len(result)}개)")
+st.dataframe(result, use_container_width=True, hide_index=True)
+
+st.caption("※ 데이터는 5분마다 자동 갱신됩니다. 구글 시트 업데이트 후 최대 5분 후 반영.")
