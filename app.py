@@ -36,7 +36,7 @@ if uploaded:
     df_d['매출일(배송완료일)'] = pd.to_datetime(df_d['매출일(배송완료일)'], errors='coerce')
     df_d = df_d[df_d['매출일(배송완료일)'].notna()]
     df_d = df_d.sort_values(['거래처명', '매출일(배송완료일)'])
-    ref_date = pd.Timestamp('2026-03-24')
+    ref_date = pd.Timestamp.today().normalize()
     cut6  = ref_date - pd.DateOffset(months=6)
     cut12 = ref_date - pd.DateOffset(months=12)
 
