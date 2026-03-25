@@ -11,7 +11,7 @@ st.sidebar.markdown("""
 
 | 그룹 | 기준 |
 |---|---|
-| 🚀 성장형 | 분기 3개↑ + 최근 2분기 매출이 첫 2분기 대비 50%↑ + 180일 내 구매 |
+| 🚀 성장형 | 분기 4개↑ + 최근 2분기가 직전 2분기 대비 10%↑ + 180일 내 구매 |
 | ✅ 안정형 | 구매 6회↑ + 누적매출 210만원↑ + 180일 내 구매 |
 | ⚠️ 위험형 | 구매 3회↑ + 180~365일 미구매 |
 | 📉 저효율형 | 구매 2회 이하 OR 365일↑ 미구매 |
@@ -21,8 +21,8 @@ st.sidebar.markdown("""
 ### 주요 지표 설명
 
 **성장률**
-첫 2분기 평균 매출 대비 최근 2분기 평균 매출 변화율
-분기 3개 미만이면 N/A
+직전 2분기 평균 대비 최근 2분기 평균 변화율
+분기 4개 미만이면 N/A
 
 **평균구매주기**
 전체 거래 기간 ÷ 구매횟수
@@ -51,19 +51,20 @@ if uploaded:
     df_d['분기'] = df_d['매출일(배송완료일)'].dt.to_period('Q')
     ref_date = pd.Timestamp('2026-03-24')
 
-    # ── 분기별 성장률 ───────────────────────────────────
-    qtr_sales = df_d.groupby(['거래처명', '분기'])['매출액(vat 제외)'].sum().reset_index()
+    # ── 분기별 성장률 (직전 2분기 vs 최근 2분기) ────────
+    qtr_sales = df_d.groupby(
+        ['거래처명', '분기'])['매출액(vat 제외)'].sum().reset_index()
 
     def get_growth(hosp_name):
         q = qtr_sales[qtr_sales['거래처명'] == hosp_name].sort_values('분기')
-        if len(q) < 3:
+        if len(q) < 4:
             return None
-        sales = q['매출액(vat 제외)'].values
-        early  = sales[:2].mean()
-        recent = sales[-2:].mean()
-        if early == 0:
+        sales  = q['매출액(vat 제외)'].values
+        prev   = sales[-4:-2].mean()  # 직전 2분기
+        recent = sales[-2:].mean()    # 최근 2분기
+        if prev == 0:
             return None
-        return (recent - early) / early
+        return (recent - prev) / prev
 
     # ── 주요제품 상위 3개 + 수량 ───────────────────────
     def top3_products(hosp_name):
@@ -107,24 +108,18 @@ if uploaded:
         # 신규
         if is_new:
             return '🆕 신규'
-
-        # 저효율: 2회 이하 OR 365일↑ 미구매
+        # 저효율
         if cnt <= 2 or inactive > 365:
             return '📉 저효율형'
-
-        # 성장형: 분기 3개↑ + 성장률 50%↑ + 180일 내 구매
-        if growth is not None and growth >= 0.5 and inactive <= 180:
+        # 성장형
+        if growth is not None and growth >= 0.1 and inactive <= 180:
             return '🚀 성장형'
-
-        # 안정형: 6회↑ + 210만원↑ + 180일 내 구매
+        # 안정형
         if cnt >= 6 and revenue >= 2_100_000 and inactive <= 180:
             return '✅ 안정형'
-
-        # 위험형: 3회↑ + 180~365일 미구매
+        # 위험형
         if cnt >= 3 and 180 < inactive <= 365:
             return '⚠️ 위험형'
-
-        # 나머지 위험형
         return '⚠️ 위험형'
 
     features['그룹'] = features.apply(assign_group, axis=1)
@@ -165,6 +160,7 @@ if uploaded:
         selected_mgr   = col_f1.selectbox("담당자", mgr_list)
         selected_group = col_f2.selectbox("그룹",   group_list)
 
+        # 정렬용 숫자 컬럼 따로 유지
         result = features[[
             '거래처명', '담당자', '지역', '그룹', '종합점수',
             '총구매횟수', '구매제품수', '누적매출액',
@@ -176,8 +172,10 @@ if uploaded:
         if selected_group != '전체':
             result = result[result['그룹']   == selected_group]
 
-        # 정렬 먼저, 변환 나중에
+        # 숫자 상태에서 정렬
         result = result.sort_values('누적매출액', ascending=False)
+
+        # 정렬 후 표시용으로 변환
         result['성장률'] = result['성장률'].apply(
             lambda x: f"+{x:.0%}" if x is not None and x > 0
             else (f"{x:.0%}" if x is not None else "N/A")
