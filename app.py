@@ -66,7 +66,7 @@ if uploaded:
 
     selected_mgr   = col_f1.selectbox("담당자 선택", mgr_list)
     selected_grade = col_f2.selectbox("위험등급 선택", grade_list)
-
+    features = features[features.index.isin(df_d['거래처명'].unique())]
     result = features.reset_index()[['거래처명', '담당자', '지역',
                                       '미구매일수', '총구매횟수', '구매제품수',
                                       '누적매출액', '이탈확률', '위험등급']].copy()
