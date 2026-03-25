@@ -1,8 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
 
 st.set_page_config(page_title="거래처 분석 대시보드", layout="wide")
 st.title("🐾 거래처 성장 분석 대시보드")
@@ -10,22 +8,31 @@ st.caption("경보제약 동물의약품 | 기준일: 2026-03-24")
 
 st.sidebar.markdown("""
 ### 그룹 분류 기준
+
 | 그룹 | 기준 |
 |---|---|
-| 🚀 성장형 | 매출 증가 + 최근 구매 + 다품목 |
-| ✅ 안정형 | 매출 유지 + 정기 구매 |
-| ⚠️ 위험형 | 매출 감소 또는 구매 간격 늘어남 |
-| 📉 저효율형 | 장기 미구매 + 저매출 |
+| 🚀 성장형 | 분기 매출이 우상향 중 + 최근 180일 내 구매 |
+| ✅ 안정형 | 꾸준한 구매 + 매출 유지 |
+| ⚠️ 위험형 | 매출 감소 중 or 구매 간격 늘어남 |
+| 📉 저효율형 | 365일 이상 미구매 or 1회 구매 후 없음 |
 
-**매출트렌드 설명**
-- 전체 거래 기간을 전반/후반으로 나눠
-  후반 매출이 전반 대비 얼마나 변했는지
-- +50% = 후반 매출이 전반보다 50% 증가
-- -30% = 후반 매출이 전반보다 30% 감소
-- 거래 3회 미만은 계산 제외
+---
+### 종합점수 계산 방식 (100점 만점)
+| 항목 | 가중치 | 설명 |
+|---|---|---|
+| 분기성장률 | 30% | 분기별 매출이 얼마나 오르는지 |
+| 누적매출액 | 25% | 전체 거래처 대비 상대적 매출 크기 |
+| 구매횟수 | 20% | 얼마나 자주 사는지 |
+| 제품다양성 | 15% | 몇 가지 제품을 사는지 |
+| 최근성 | 10% | 마지막 구매가 얼마나 최근인지 |
 
-**주요제품**
-- 구매 횟수 기준 상위 3개 제품
+---
+### 분기 매출트렌드 설명
+- 거래 기간을 분기(3개월)로 나눠
+  각 분기 매출의 기울기(증가/감소 방향)
+- 양수(+): 분기별로 매출 증가 중
+- 음수(-): 분기별로 매출 감소 중
+- 거래 2분기 미만은 0으로 표시
 """)
 
 uploaded = st.file_uploader("Raw 엑셀 파일 업로드", type=["xlsx"])
@@ -38,7 +45,29 @@ if uploaded:
     ].copy()
     df_d['매출일(배송완료일)'] = pd.to_datetime(df_d['매출일(배송완료일)'], errors='coerce')
     df_d = df_d[df_d['매출일(배송완료일)'].notna()]
+    df_d['분기'] = df_d['매출일(배송완료일)'].dt.to_period('Q')
     ref_date = pd.Timestamp('2026-03-24')
+
+    # ── 분기별 매출 트렌드 계산 ────────────────────────
+    def get_quarterly_trend(hosp_name):
+        d = df_d[df_d['거래처명'] == hosp_name]
+        qtr = d.groupby('분기')['매출액(vat 제외)'].sum().sort_index()
+        if len(qtr) < 2:
+            return 0.0
+        # 선형 회귀 기울기 (분기 순서 vs 매출)
+        x = np.arange(len(qtr))
+        y = qtr.values
+        if y.std() == 0:
+            return 0.0
+        slope = np.polyfit(x, y, 1)[0]
+        # 평균 매출 대비 기울기 비율
+        return slope / y.mean() if y.mean() != 0 else 0.0
+
+    # ── 주요제품 상위 3개 + 수량 ───────────────────────
+    def top3_products(hosp_name):
+        d = df_d[df_d['거래처명'] == hosp_name]
+        top = d.groupby('품명요약2')['매출수량'].sum().sort_values(ascending=False).head(3)
+        return ' / '.join([f"{prod} {int(qty)}개" for prod, qty in top.items()])
 
     # ── 피처 생성 ──────────────────────────────────────
     g = df_d.groupby('거래처명')
@@ -55,71 +84,40 @@ if uploaded:
 
     features['활동기간_일']  = (features['마지막구매일'] - features['첫구매일']).dt.days.fillna(0)
     features['미구매일수']   = (ref_date - features['마지막구매일']).dt.days.fillna(999)
-    features['평균구매주기'] = (features['활동기간_일'] / features['총구매횟수'].replace(0,1))
-    features['거래처당매출'] = (features['누적매출액'] / features['총구매횟수'].replace(0,1))
+    features['평균구매주기'] = features['활동기간_일'] / features['총구매횟수'].replace(0,1)
 
-    # 주요제품 상위 3개
-    def top3_products(hosp):
-        prods = df_d[df_d['거래처명']==hosp]['품명요약2'].value_counts().head(3)
-        return ', '.join(prods.index.tolist())
-
-    # 매출 트렌드 (3회 이상만 계산)
-    def get_trend(row):
-        if row['총구매횟수'] < 3:
-            return 0.0
-        hosp = row['거래처명']
-        mid  = row['첫구매일'] + (row['마지막구매일'] - row['첫구매일']) / 2
-        d    = df_d[df_d['거래처명'] == hosp]
-        early = d[d['매출일(배송완료일)'] <= mid]['매출액(vat 제외)'].sum()
-        late  = d[d['매출일(배송완료일)'] >  mid]['매출액(vat 제외)'].sum()
-        if early == 0: return 0.0
-        return (late - early) / early
-
-    with st.spinner("거래처 패턴 분석 중..."):
-        features['매출트렌드'] = features.apply(get_trend, axis=1)
+    with st.spinner("거래처 패턴 분석 중... (잠시 기다려주세요)"):
+        features['분기성장률'] = features['거래처명'].apply(get_quarterly_trend)
         features['주요제품']   = features['거래처명'].apply(top3_products)
 
-    # ── 그룹 점수화 (설득력 있는 기준) ────────────────
-    # 각 지표를 0~100점으로 정규화 후 가중 합산
+    # ── 종합점수 계산 ──────────────────────────────────
     def normalize(series):
         mn, mx = series.min(), series.max()
-        if mx == mn: return pd.Series([50]*len(series), index=series.index)
+        if mx == mn:
+            return pd.Series([50.0] * len(series), index=series.index)
         return (series - mn) / (mx - mn) * 100
 
-    # 점수 높을수록 좋음
-    features['점수_매출액']    = normalize(features['누적매출액'])
-    features['점수_구매횟수']  = normalize(features['총구매횟수'])
-    features['점수_제품다양성'] = normalize(features['구매제품수'])
-    features['점수_트렌드']    = normalize(features['매출트렌드'])
-    features['점수_최근성']    = normalize(-features['미구매일수'])  # 최근일수록 높음
-    features['점수_구매주기']  = normalize(-features['평균구매주기']) # 주기 짧을수록 높음
-
-    # 가중 합산 (총합 100%)
     features['종합점수'] = (
-        features['점수_매출액']    * 0.25 +
-        features['점수_구매횟수']  * 0.20 +
-        features['점수_제품다양성'] * 0.15 +
-        features['점수_트렌드']    * 0.20 +
-        features['점수_최근성']    * 0.15 +
-        features['점수_구매주기']  * 0.05
+        normalize(features['분기성장률'])  * 0.30 +
+        normalize(features['누적매출액'])  * 0.25 +
+        normalize(features['총구매횟수'])  * 0.20 +
+        normalize(features['구매제품수'])  * 0.15 +
+        normalize(-features['미구매일수']) * 0.10
     )
 
-    # 그룹 분류 (종합점수 + 트렌드 조합)
+    # ── 그룹 분류 ──────────────────────────────────────
     def assign_group(row):
-        score = row['종합점수']
-        trend = row['매출트렌드']
-        inactive = row['미구매일수']
-
-        if inactive > 365:
+        # 저효율: 1년 이상 미구매 or 1회만 구매
+        if row['미구매일수'] > 365 or row['총구매횟수'] <= 1:
             return '📉 저효율형'
-        elif score >= 60 and trend >= 0:
+        # 성장형: 분기 매출 우상향 + 최근 180일 내 구매
+        if row['분기성장률'] > 0 and row['미구매일수'] <= 180:
             return '🚀 성장형'
-        elif score >= 40 and inactive <= 180:
-            return '✅ 안정형'
-        elif trend < -0.2 or inactive > 180:
+        # 위험형: 분기 매출 감소 or 구매 간격 길어짐
+        if row['분기성장률'] < -0.1 or row['미구매일수'] > 180:
             return '⚠️ 위험형'
-        else:
-            return '✅ 안정형'
+        # 안정형: 나머지
+        return '✅ 안정형'
 
     features['그룹'] = features.apply(assign_group, axis=1)
 
@@ -147,7 +145,7 @@ if uploaded:
         result = features[[
             '거래처명', '담당자', '지역', '그룹', '종합점수',
             '총구매횟수', '구매제품수', '누적매출액',
-            '매출트렌드', '미구매일수', '주요제품'
+            '분기성장률', '미구매일수', '주요제품'
         ]].copy()
 
         if selected_mgr   != '전체':
@@ -157,8 +155,8 @@ if uploaded:
 
         result = result.sort_values('종합점수', ascending=False)
         result['종합점수']  = result['종합점수'].round(1)
-        result['매출트렌드'] = result['매출트렌드'].apply(
-            lambda x: f"+{x:.0%}" if x > 0 else f"{x:.0%}"
+        result['분기성장률'] = result['분기성장률'].apply(
+            lambda x: f"+{x:.1%}" if x > 0 else f"{x:.1%}"
         )
         result['누적매출액'] = result['누적매출액'].apply(lambda x: f"{x:,.0f}원")
 
@@ -177,9 +175,14 @@ if uploaded:
         c3.metric("평균 구매횟수", f"{grp['총구매횟수'].mean():.1f}회")
         c4.metric("평균 제품수",   f"{grp['구매제품수'].mean():.1f}개")
 
-        st.markdown("**📦 주요 구매 제품 Top 5**")
-        prod_cnt = df_d[df_d['거래처명'].isin(grp['거래처명'])]['품명요약2'].value_counts().head(5)
-        st.bar_chart(prod_cnt)
+        st.markdown("**📦 주요 구매 제품 Top 5 (수량 기준)**")
+        prod_qty = (
+            df_d[df_d['거래처명'].isin(grp['거래처명'])]
+            .groupby('품명요약2')['매출수량'].sum()
+            .sort_values(ascending=False)
+            .head(5)
+        )
+        st.bar_chart(prod_qty)
 
         col_l, col_r = st.columns(2)
         with col_l:
@@ -192,7 +195,8 @@ if uploaded:
         st.markdown("**📈 그룹 특징 요약**")
         st.dataframe(
             grp[['종합점수', '총구매횟수', '구매제품수',
-                 '누적매출액', '매출트렌드', '미구매일수']].describe().round(1),
+                 '누적매출액', '분기성장률', '미구매일수']]
+            .describe().round(1),
             use_container_width=True
         )
 
@@ -207,5 +211,7 @@ if uploaded:
             평균매출=('누적매출액', 'mean'),
         ).reset_index()
         mgr_summary['평균종합점수'] = mgr_summary['평균종합점수'].round(1)
-        mgr_summary['평균매출']    = mgr_summary['평균매출'].apply(lambda x: f"{x:,.0f}원")
+        mgr_summary['평균매출']    = mgr_summary['평균매출'].apply(
+            lambda x: f"{x:,.0f}원"
+        )
         st.dataframe(mgr_summary, use_container_width=True, hide_index=True)
