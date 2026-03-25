@@ -12,18 +12,16 @@ st.sidebar.markdown("""
 
 | 그룹 | 기준 |
 |---|---|
-| 🟢 안심 | 누적 1000만↑ + 10회↑ + 주기배율 2.0↓ / 누적 3000만↑ + 3회↑ + 주기배율 2.0↓ |
-| 🚀 성장 | 주기배율 1.5↓ + 반기추세 양수 + 이전반기 총매출 10%↑ + 3회↑ |
-| 🌱 가능성 | 주기배율 1.5↓ + 최근 반기 활성 + 이전반기 거의 없었던 곳 |
-| ⚠️ 주의 | 주기배율 1.5↑ + 반기추세 -30%↓ (과거엔 좋았지만 최근 신호 나쁨) |
+| 🟢 안심 | 누적 1000만↑+10회↑+주기배율 2.0↓ / 누적 3000만↑+3회↑+주기배율 2.0↓ |
+| 🚀 성장 | 반기추세 +20%↑+주기배율 1.5↓ / 급성장 / 장기거래처 재활성화 |
+| ⚠️ 주의 | 누적 500만↑+5회↑+주기배율 1.5↑+반기추세 -30%↓ |
 | 😐 보통 | 위 조건 해당 없음 |
-| 💀 정리 | 365일↑ 미구매 + 누적 300만↓ + 3회↓ |
+| 💀 정리 | 미구매 365일↑+누적 300만↓+3회↓ |
 
 ---
 ### 지표 설명
 **주기배율** = 미구매일수 ÷ 평균구매주기
 **반기추세** = 최근6개월 vs 이전6개월 매출 변화율
-**품목확장** = 최근 구매 제품수 - 초기 구매 제품수
 """)
 
 uploaded = st.file_uploader("Raw 엑셀 파일 업로드", type=["xlsx"])
@@ -59,23 +57,13 @@ if uploaded:
     features['주기배율']     = features['미구매일수'] / features['평균구매주기'].replace(0, 1)
     features['회당매출']     = features['누적매출액'] / features['총구매횟수'].replace(0, 1)
 
-    # ── 반기 매출 계산 ─────────────────────────────────
-    def get_half_sales(hosp):
+    # ── 반기 매출 ──────────────────────────────────────
+    def get_half(hosp):
         d      = df_d[df_d['거래처명'] == hosp]
         recent = d[d['매출일(배송완료일)'] >  cut6]['매출액(vat 제외)'].sum()
         prev   = d[(d['매출일(배송완료일)'] >  cut12) &
                    (d['매출일(배송완료일)'] <= cut6)]['매출액(vat 제외)'].sum()
         return recent, prev
-
-    # ── 품목 확장 ──────────────────────────────────────
-    def get_expansion(hosp):
-        d = df_d[df_d['거래처명'] == hosp].sort_values('매출일(배송완료일)')
-        dates = d['매출일(배송완료일)'].unique()
-        if len(dates) < 2:
-            return 0
-        early = d[d['매출일(배송완료일)'].isin(dates[:2])]['품명요약2'].nunique()
-        late  = d[d['매출일(배송완료일)'].isin(dates[-2:])]['품명요약2'].nunique()
-        return late - early
 
     # ── 주요제품 ──────────────────────────────────────
     def top3_products(hosp):
@@ -84,13 +72,13 @@ if uploaded:
         return ' / '.join([f"{p} {int(q)}개" for p, q in top.items()])
 
     with st.spinner("거래처 분석 중..."):
-        half = features['거래처명'].apply(lambda x: pd.Series(get_half_sales(x), index=['최근반기','이전반기']))
+        half = features['거래처명'].apply(
+            lambda x: pd.Series(get_half(x), index=['최근반기', '이전반기']))
         features['최근반기'] = half['최근반기'].values
         features['이전반기'] = half['이전반기'].values
         features['반기추세'] = features.apply(
             lambda r: (r['최근반기'] - r['이전반기']) / r['이전반기']
             if r['이전반기'] > 0 else None, axis=1)
-        features['품목확장'] = features['거래처명'].apply(get_expansion)
         features['주요제품'] = features['거래처명'].apply(top3_products)
 
     # ── 그룹 분류 ──────────────────────────────────────
@@ -101,43 +89,42 @@ if uploaded:
         trend    = row['반기추세']
         recent6  = row['최근반기']
         prev6    = row['이전반기']
-        total    = revenue if revenue > 0 else 1
-
+        inactive = row['미구매일수']
+        duration = row['활동기간_일']
         on_track = ratio < 1.5
 
-        # 💀 정리: 365일↑ 미구매 + 누적 300만↓ + 3회↓
-        if row['미구매일수'] >= 365 and revenue < 3_000_000 and cnt <= 3:
+        # 💀 정리
+        if inactive >= 365 and revenue < 3_000_000 and cnt <= 3:
             return '💀 정리대상'
 
         # 🟢 안심
-        if (revenue >= 10_000_000 and cnt >= 10 and ratio < 2.0):
+        if revenue >= 10_000_000 and cnt >= 10 and ratio < 2.0:
             return '🟢 안심'
-        if (revenue >= 30_000_000 and cnt >= 3 and ratio < 2.0):
+        if revenue >= 30_000_000 and cnt >= 3 and ratio < 2.0:
             return '🟢 안심'
 
-        # ⚠️ 주의: 과거엔 좋았는데 최근 신호 나쁨
+        # ⚠️ 주의
         if (revenue >= 5_000_000 and cnt >= 5 and
-            ratio >= 1.5 and
-            trend is not None and trend <= -0.3):
+                ratio >= 1.5 and
+                trend is not None and trend <= -0.3):
             return '⚠️ 주의'
 
-        # 🚀 성장: 진짜 성장 중
-        # 이전반기가 총매출의 10% 이상 = 이전에도 거래 있었음
-        if (on_track and cnt >= 3 and
-            trend is not None and trend > 0 and
-            prev6 >= total * 0.1):
+        # 🚀 성장 ① 반기추세 +20%↑
+        if on_track and trend is not None and trend >= 0.2:
             return '🚀 성장'
 
-        # 🌱 가능성: 최근 활성화 or 재활성화
-        # 최근 반기에 거래 있고, 이전반기 거의 없었던 곳
-        if (on_track and cnt >= 2 and recent6 > 0 and
-            (prev6 < total * 0.1 or trend is None)):
-            return '🌱 가능성'
+        # 🚀 성장 ② 급성장 (이전반기 있고 최근반기 3배↑)
+        if (on_track and prev6 > 0 and
+                recent6 >= prev6 * 3 and duration >= 180):
+            return '🚀 성장'
+
+        # 🚀 성장 ③ 장기거래처 재활성화
+        # 활동기간 365일↑ + 이전반기 0 + 최근반기 500만↑
+        if (on_track and duration >= 365 and
+                prev6 == 0 and recent6 >= 5_000_000):
+            return '🚀 성장'
 
         # 😐 보통
-        if on_track:
-            return '😐 보통'
-
         return '😐 보통'
 
     features['그룹'] = features.apply(assign_group, axis=1)
@@ -145,17 +132,16 @@ if uploaded:
     # ── 전체 현황 ──────────────────────────────────────
     st.subheader("📊 전체 현황")
     total  = len(features)
-    groups = ['🟢 안심', '🚀 성장', '🌱 가능성', '⚠️ 주의', '😐 보통', '💀 정리대상']
+    groups = ['🟢 안심', '🚀 성장', '⚠️ 주의', '😐 보통', '💀 정리대상']
     counts = {g: (features['그룹'] == g).sum() for g in groups}
 
-    cols = st.columns(6)
+    cols = st.columns(5)
     for col, (label, cnt) in zip(cols, counts.items()):
         col.metric(label, f"{cnt}개", f"{cnt/total:.0%}")
 
     color_map = {
         '🟢 안심':    '#2ecc71',
         '🚀 성장':    '#3498db',
-        '🌱 가능성':  '#f1c40f',
         '⚠️ 주의':   '#e67e22',
         '😐 보통':    '#95a5a6',
         '💀 정리대상':'#e74c3c',
@@ -195,8 +181,6 @@ if uploaded:
     display['반기추세']    = result['반기추세'].apply(
         lambda x: f"+{x:.0%}" if x is not None and x > 0
         else (f"{x:.0%}" if x is not None else "N/A")).values
-    display['품목확장']    = result['품목확장'].apply(
-        lambda x: f"+{int(x)}" if x > 0 else str(int(x))).values
     display['미구매일수']  = result['미구매일수'].values
     display['평균구매주기']= result['평균구매주기'].apply(lambda x: f"{x:.0f}일").values
     display['주기배율']    = result['주기배율'].apply(lambda x: f"{x:.1f}배").values
@@ -204,20 +188,3 @@ if uploaded:
 
     st.subheader(f"📋 거래처 목록 ({len(result)}개)")
     st.dataframe(display, use_container_width=True, hide_index=True)
-
-    st.divider()
-
-    # ── 담당자 현황 ────────────────────────────────────
-    st.subheader("👤 담당자별 현황")
-    mgr_sum = features.groupby('담당자').agg(
-        담당거래처=('거래처명',  'count'),
-        안심=('그룹',    lambda x: (x == '🟢 안심').sum()),
-        성장=('그룹',    lambda x: (x == '🚀 성장').sum()),
-        가능성=('그룹',  lambda x: (x == '🌱 가능성').sum()),
-        주의=('그룹',    lambda x: (x == '⚠️ 주의').sum()),
-        보통=('그룹',    lambda x: (x == '😐 보통').sum()),
-        정리=('그룹',    lambda x: (x == '💀 정리대상').sum()),
-        평균매출=('누적매출액', 'mean'),
-    ).reset_index()
-    mgr_sum['평균매출'] = mgr_sum['평균매출'].apply(lambda x: f"{x:,.0f}원")
-    st.dataframe(mgr_sum, use_container_width=True, hide_index=True)
